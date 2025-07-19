@@ -109,6 +109,7 @@ dependencies = [
  "embassy-time",
  "embedded-graphics",
  "embedded-hal 1.0.0",
+ "heapless",
  "i2c-character-display",
  "panic-probe",
  "portable-atomic",
