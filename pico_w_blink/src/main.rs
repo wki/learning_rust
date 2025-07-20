@@ -1,13 +1,24 @@
 #![no_std]
 #![no_main]
 #![allow(dead_code)]
+/*
+Wiring
+
+ GP2, GP3 -> SDA & SCL für I2C Display
+ GP26 -> Joystick h/v Analog in
+ GP27 -> Joystick h/v Analog in
+
+ */
+
+
 use heapless::String;
 use cyw43_pio::{PioSpi, DEFAULT_CLOCK_DIVIDER};
 use defmt::*;
 use embassy_executor::Spawner;
-use embassy_rp::{bind_interrupts};
-use embassy_rp::gpio::{Level, Output};
-use embassy_rp::i2c::{self, Config};
+use embassy_rp::{bind_interrupts, Peripheral};
+use embassy_rp::gpio::{Level, Output, Pull};
+use embassy_rp::adc::{Adc, Channel as AdcChannel, Config as AdcConfig, InterruptHandler as AdcInterruptHandler};
+use embassy_rp::i2c::{self, Config as I2cConfig, InterruptHandler as I2cInterruptHandler};
 use embassy_rp::peripherals::{DMA_CH0, PIO0, I2C1};
 use embassy_rp::pio::{InterruptHandler as PioInterruptHandler, Pio};
 use embassy_time::{Duration, Timer};
@@ -26,7 +37,8 @@ use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => PioInterruptHandler<PIO0>;
-    I2C1_IRQ => i2c::InterruptHandler<I2C1>;
+    I2C1_IRQ => I2cInterruptHandler<I2C1>;
+    ADC_IRQ_FIFO => AdcInterruptHandler;
 });
 
 #[embassy_executor::task]
@@ -38,7 +50,7 @@ async fn cyw43_task(runner: cyw43::Runner<'static, Output<'static>, PioSpi<'stat
 async fn main(spawner: Spawner) {
     info!("Program start");
 
-    let p = embassy_rp::init(Default::default());
+    let mut p = embassy_rp::init(Default::default());
     let mut led = Output::new(p.PIN_15, Level::Low);
 
     // Configure PIO and CYW43
@@ -70,7 +82,7 @@ async fn main(spawner: Spawner) {
     // let wifi_password = env!("WIFI_PASSWORD");
 
     // Configure display
-    let config = Config::default();
+    let config = I2cConfig::default();
     let i2c = i2c::I2c::new_async(p.I2C1, p.PIN_3, p.PIN_2, Irqs, config);
     let mut display: GraphicsMode<_> = Builder::new().connect_i2c(i2c).into();
     display.init().unwrap();
@@ -79,6 +91,11 @@ async fn main(spawner: Spawner) {
     let text_style = MonoTextStyleBuilder::new()
         .font(&FONT_6X10)
         .text_color(BinaryColor::On)
+        .build();
+
+    let reverse_text_style = MonoTextStyleBuilder::new()
+        .font(&FONT_6X10)
+        .text_color(BinaryColor::Off)
         .build();
 
     Text::with_baseline("Hello world!", Point::zero(), text_style, Baseline::Top)
@@ -116,35 +133,80 @@ async fn main(spawner: Spawner) {
 
     display.flush().unwrap();
 
+    // Configure ADC for Joystick reading
+    let mut adc = Adc::new(p.ADC, Irqs, AdcConfig::default());
+    let mut joystick_h = AdcChannel::new_pin(&mut p.PIN_26, Pull::None);
+    let mut joystick_v = AdcChannel::new_pin(&mut p.PIN_27, Pull::None);
+
+
     let mut i:u8 = 0;
     loop {
-        info!("external LED on, onboard LED off!");
+        // BLINK LEDs
+        info!("blinking...");
         led.set_high();
         control.gpio_set(0, false).await;
         Timer::after(Duration::from_secs(1)).await;
 
-        info!("external LED off, onboard LED on!");
         led.set_low();
         control.gpio_set(0, true).await;
         Timer::after(Duration::from_secs(1)).await;
 
-        info!("i is {}", i);
+        // READ ADC
+        let x = adc.read(&mut joystick_h).await.unwrap();
+        let y = adc.read(&mut joystick_v).await.unwrap();
+        info!("X: {}, Y: {}", x, y);
+        let xline = convert(x);
+        let yline = convert(y);
+
+
+
+        // print things...
+        // info!("i: {}", i);
         let mut line:String<5> = String::new();
         line.push((0x30 + i / 10) as char).unwrap();
         line.push((0x30 + i % 10) as char).unwrap();
 
-        Rectangle::with_corners(Point::new(80, 16), Point::new(80 + 12, 16 + 10))
+        Rectangle::with_corners(Point::new(77, 14), Point::new(77 + 16, 14 + 12))
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(&mut display)
+            .unwrap();
+
+        Text::with_baseline(&line, Point::new(80, 16), reverse_text_style, Baseline::Top)
+            .draw(&mut display)
+            .unwrap();
+
+        Rectangle::with_corners(Point::new(0, 50), Point::new(0 + 127, 50+13))
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
             .draw(&mut display)
             .unwrap();
 
-        Text::with_baseline(&line, Point::new(80, 16), text_style, Baseline::Top)
+        Text::with_baseline(&xline, Point::new(0, 50), text_style, Baseline::Top)
+            .draw(&mut display)
+            .unwrap();
+        Text::with_baseline(&yline, Point::new(40, 50), text_style, Baseline::Top)
             .draw(&mut display)
             .unwrap();
 
         display.flush().unwrap();
-        info!("draw done"); // Info: Zeichen-Operation braucht ca. 0,1s
+        // info!("draw done"); // Info: Zeichen-Operation braucht ca. 0,1s
 
         i = if i<99 {i+1} else {0};
     }
+}
+
+fn convert(nr: u16) -> String<7> {
+    let mut xline:String<7> = String::new();
+    let mut div = 10000;
+    let mut omit_zeros = true;
+    while div >= 10 {
+        let digit = (nr % div) / (div / 10);
+        if div == 10 || !omit_zeros || digit > 0 {
+            xline.push((0x30 + digit) as u8 as char).unwrap();
+            omit_zeros = false;
+        }
+
+        div /= 10;
+    }
+
+    xline
 }
