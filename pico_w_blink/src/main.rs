@@ -3,19 +3,17 @@
 #![allow(dead_code)]
 /*
 Wiring
-
- GP2, GP3 -> SDA & SCL für I2C Display
- GP26 -> Joystick h/v Analog in
- GP27 -> Joystick h/v Analog in
-
+ GP2, GP3 -> SDA & SCL for I2C Display
+ GP26 -> Joystick h Analog in
+ GP27 -> Joystick v Analog in
+ ?? -> joystick button
  */
-
 
 use heapless::String;
 use cyw43_pio::{PioSpi, DEFAULT_CLOCK_DIVIDER};
 use defmt::*;
 use embassy_executor::Spawner;
-use embassy_rp::{bind_interrupts, Peripheral};
+use embassy_rp::{bind_interrupts};
 use embassy_rp::gpio::{Level, Output, Pull};
 use embassy_rp::adc::{Adc, Channel as AdcChannel, Config as AdcConfig, InterruptHandler as AdcInterruptHandler};
 use embassy_rp::i2c::{self, Config as I2cConfig, InterruptHandler as I2cInterruptHandler};
