@@ -8,7 +8,9 @@ Wiring
  GP27 -> Joystick v Analog in
  ?? -> joystick button
  */
+mod display;
 
+use embedded_graphics::prelude::Point;
 use heapless::String;
 use cyw43_pio::{PioSpi, DEFAULT_CLOCK_DIVIDER};
 use defmt::*;
@@ -20,16 +22,6 @@ use embassy_rp::i2c::{self, Config as I2cConfig, InterruptHandler as I2cInterrup
 use embassy_rp::peripherals::{DMA_CH0, PIO0, I2C1};
 use embassy_rp::pio::{InterruptHandler as PioInterruptHandler, Pio};
 use embassy_time::{Duration, Instant, Timer};
-use embedded_graphics::{
-    mono_font::{ascii::FONT_6X10, MonoTextStyleBuilder},
-    pixelcolor::BinaryColor,
-    prelude::*,
-    text::{Baseline, Text},
-    primitives::{Rectangle, Circle},
-};
-use embedded_graphics::primitives::{Line, PrimitiveStyle};
-use sh1106::Builder;
-use sh1106::prelude::GraphicsMode;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -38,7 +30,6 @@ use bt_hci::controller::ControllerCmdSync;
 use cyw43::bluetooth::BtDriver;
 use embassy_futures::join::join;
 use trouble_host::prelude::*;
-
 
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => PioInterruptHandler<PIO0>;
@@ -116,7 +107,7 @@ where
 
                 let len = AdStructure::encode_slice(
                     &[
-                        AdStructure::CompleteLocalName(b"JoyStickBeacon"),
+                        AdStructure::CompleteLocalName(b"JoyStickBeaconx"),
                         AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
                         AdStructure::ManufacturerSpecificData {
                             company_identifier: COMPANY_ID,
@@ -197,54 +188,9 @@ async fn main(spawner: Spawner) {
     // Configure display
     let config = I2cConfig::default();
     let i2c = i2c::I2c::new_async(p.I2C1, p.PIN_3, p.PIN_2, Irqs, config);
-    let mut display: GraphicsMode<_> = Builder::new().connect_i2c(i2c).into();
-    display.init().unwrap();
-    display.flush().unwrap();
-
-    let text_style = MonoTextStyleBuilder::new()
-        .font(&FONT_6X10)
-        .text_color(BinaryColor::On)
-        .build();
-
-    let reverse_text_style = MonoTextStyleBuilder::new()
-        .font(&FONT_6X10)
-        .text_color(BinaryColor::Off)
-        .build();
-
-    Text::with_baseline("Hello world!", Point::zero(), text_style, Baseline::Top)
-        .draw(&mut display)
-        .unwrap();
-
-    Text::with_baseline("Hello Rust!", Point::new(0, 16), text_style, Baseline::Top)
-        .draw(&mut display)
-        .unwrap();
-
-    Line::new(Point::new(8, 32 + 16), Point::new(8 + 16, 32 + 16))
-        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-        .draw(&mut display)
-        .unwrap();
-
-    Line::new(Point::new(8, 32 + 16), Point::new(8 + 8, 32))
-        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-        .draw(&mut display)
-        .unwrap();
-
-    Line::new(Point::new(8 + 16, 32 + 16), Point::new(8 + 8, 32))
-        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-        .draw(&mut display)
-        .unwrap();
-
-    Rectangle::with_corners(Point::new(48, 32), Point::new(48 + 16, 32 + 16))
-        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-        .draw(&mut display)
-        .unwrap();
-
-    Circle::new(Point::new(88, 32), 16)
-        .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-        .draw(&mut display)
-        .unwrap();
-
-    display.flush().unwrap();
+    let mut screen = display::init(i2c);
+    screen.write_text("Hello Rust", Point::zero(), display::TextStyle::Positive);
+    screen.flush();
 
     // Configure ADC for Joystick reading
     let mut adc = Adc::new(p.ADC, Irqs, AdcConfig::default());
@@ -271,34 +217,14 @@ async fn main(spawner: Spawner) {
         let yline = convert(y);
 
         // print things...
-        // info!("i: {}", i);
         let mut line:String<5> = String::new();
         line.push((0x30 + i / 10) as char).unwrap();
         line.push((0x30 + i % 10) as char).unwrap();
 
-        Rectangle::with_corners(Point::new(77, 14), Point::new(77 + 16, 14 + 12))
-            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-            .draw(&mut display)
-            .unwrap();
-
-        Text::with_baseline(&line, Point::new(80, 16), reverse_text_style, Baseline::Top)
-            .draw(&mut display)
-            .unwrap();
-
-        Rectangle::with_corners(Point::new(0, 50), Point::new(0 + 127, 50+13))
-            .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
-            .draw(&mut display)
-            .unwrap();
-
-        Text::with_baseline(&xline, Point::new(0, 50), text_style, Baseline::Top)
-            .draw(&mut display)
-            .unwrap();
-        Text::with_baseline(&yline, Point::new(40, 50), text_style, Baseline::Top)
-            .draw(&mut display)
-            .unwrap();
-
-        display.flush().unwrap();
-        // info!("draw done"); // Info: Zeichen-Operation braucht ca. 0,1s
+        screen.write_text(line.as_str(), Point::new(80,16), display::TextStyle::Positive);
+        screen.write_text(xline.as_str(), Point::new(0,50), display::TextStyle::Positive);
+        screen.write_text(yline.as_str(), Point::new(40,50), display::TextStyle::Positive);
+        screen.flush();
 
         i = if i<99 {i+1} else {0};
     }
