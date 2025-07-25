@@ -221,9 +221,9 @@ async fn main(spawner: Spawner) {
         line.push((0x30 + i / 10) as char).unwrap();
         line.push((0x30 + i % 10) as char).unwrap();
 
-        screen.write_text(line.as_str(), Point::new(80,16), display::TextStyle::Positive);
-        screen.write_text(xline.as_str(), Point::new(0,50), display::TextStyle::Positive);
-        screen.write_text(yline.as_str(), Point::new(40,50), display::TextStyle::Positive);
+        screen.write_text(line.as_str(), Point::new(80,16), display::TextStyle::PositiveClear);
+        screen.write_text(xline.as_str(), Point::new(0,50), display::TextStyle::NegativeClear);
+        screen.write_text(yline.as_str(), Point::new(40,50), display::TextStyle::NegativeClear);
         screen.flush();
 
         i = if i<99 {i+1} else {0};
