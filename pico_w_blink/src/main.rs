@@ -10,6 +10,10 @@ Wiring
  */
 mod display;
 
+use embassy_rp::adc::Channel;
+use crate::i2c::Mode;
+use crate::i2c::Async;
+use embassy_rp::Peripherals;
 use embedded_graphics::prelude::Point;
 use heapless::String;
 use cyw43_pio::{PioSpi, DEFAULT_CLOCK_DIVIDER};
@@ -37,6 +41,10 @@ bind_interrupts!(struct Irqs {
     ADC_IRQ_FIFO => AdcInterruptHandler;
 });
 
+// joystick state (static) written from ADC, read and published by bluetooth stack
+static mut joystick_x: u16 = 0;
+static mut joystick_y: u16 = 0;
+
 // Use your company ID (register for free with Bluetooth SIG)
 const COMPANY_ID: u16 = 0xBEEF;
 
@@ -44,7 +52,9 @@ fn make_adv_payload(start: Instant, update_count: u32) -> [u8; 8] {
     let mut data = [0u8; 8];
     let elapsed_ms = Instant::now().duration_since(start).as_millis() as u32;
     data[0..4].copy_from_slice(&update_count.to_be_bytes());
-    data[4..8].copy_from_slice(&elapsed_ms.to_be_bytes());
+    // data[4..8].copy_from_slice(&elapsed_ms.to_be_bytes());
+    unsafe { data[4..6].copy_from_slice(&joystick_x.to_be_bytes()); }
+    unsafe { data[6..8].copy_from_slice(&joystick_y.to_be_bytes()); }
     data
 }
 
@@ -107,7 +117,7 @@ where
 
                 let len = AdStructure::encode_slice(
                     &[
-                        AdStructure::CompleteLocalName(b"JoyStickBeaconx"),
+                        AdStructure::CompleteLocalName(b"JoyStickBeacon"),
                         AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
                         AdStructure::ManufacturerSpecificData {
                             company_identifier: COMPANY_ID,
@@ -143,6 +153,29 @@ async fn cyw43_task(runner: cyw43::Runner<'static, Output<'static>, PioSpi<'stat
 async fn beacon_task(bt_device: BtDriver<'static>) -> () {
     let controller: ExternalController<_, 10> = ExternalController::new(bt_device);
     run(controller).await;
+}
+
+#[embassy_executor::task]
+async fn joystick_task(mut adc: Adc<'static, embassy_rp::adc::Async>, mut joystick_h: Channel<'static>, mut joystick_v: Channel<'static>) -> () 
+{
+    let mut count = 0u8;
+    loop {
+        let x = adc.read(&mut joystick_h).await.unwrap();
+        let y = adc.read(&mut joystick_v).await.unwrap();
+        
+        if count == 0 {
+            info!("Joystick X: {}, Y: {}", x, y);
+        }
+        
+        unsafe {
+            joystick_x = x;
+            joystick_y = y;
+        }
+
+        Timer::after(Duration::from_millis(100)).await;
+        
+        count = (count + 1) % 10;
+    }
 }
 
 #[embassy_executor::main]
@@ -192,10 +225,12 @@ async fn main(spawner: Spawner) {
     screen.write_text("Hello Rust", Point::zero(), display::TextStyle::Positive);
     screen.flush();
 
+    
     // Configure ADC for Joystick reading
-    let mut adc = Adc::new(p.ADC, Irqs, AdcConfig::default());
-    let mut joystick_h = AdcChannel::new_pin(p.PIN_26, Pull::None);
-    let mut joystick_v = AdcChannel::new_pin(p.PIN_27, Pull::None);
+    let adc = Adc::new(p.ADC, Irqs, AdcConfig::default());
+    let joystick_h = AdcChannel::new_pin(p.PIN_26, Pull::None);
+    let joystick_v = AdcChannel::new_pin(p.PIN_27, Pull::None);
+    unwrap!(spawner.spawn(joystick_task(adc, joystick_h, joystick_v)));
 
     let mut i:u8 = 0;
     loop {
@@ -209,12 +244,9 @@ async fn main(spawner: Spawner) {
         control.gpio_set(0, true).await;
         Timer::after(Duration::from_secs(1)).await;
 
-        // READ ADC
-        let x = adc.read(&mut joystick_h).await.unwrap();
-        let y = adc.read(&mut joystick_v).await.unwrap();
-        info!("X: {}, Y: {}", x, y);
-        let xline = convert(x);
-        let yline = convert(y);
+        // READ ADC and convert to strings for display
+        let xline = convert(unsafe { joystick_x });
+        let yline = convert(unsafe { joystick_y });
 
         // print things...
         let mut line:String<5> = String::new();

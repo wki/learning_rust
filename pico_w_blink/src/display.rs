@@ -87,30 +87,3 @@ impl Display<'_> {
             .unwrap();
     }
 }
-
-/*
-Line::new(Point::new(8, 32 + 16), Point::new(8 + 16, 32 + 16))
-.into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-.draw(&mut display)
-.unwrap();
-
-Line::new(Point::new(8, 32 + 16), Point::new(8 + 8, 32))
-.into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-.draw(&mut display)
-.unwrap();
-
-Line::new(Point::new(8 + 16, 32 + 16), Point::new(8 + 8, 32))
-.into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-.draw(&mut display)
-.unwrap();
-
-Rectangle::with_corners(Point::new(48, 32), Point::new(48 + 16, 32 + 16))
-.into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-.draw(&mut display)
-.unwrap();
-
-Circle::new(Point::new(88, 32), 16)
-.into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-.draw(&mut display)
-.unwrap();
-*/
