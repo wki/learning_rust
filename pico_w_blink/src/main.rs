@@ -1,3 +1,4 @@
+#![allow(unused_attributes)]
 #![no_std]
 #![no_main]
 #![allow(dead_code)]
@@ -11,9 +12,6 @@ Wiring
 mod display;
 
 use embassy_rp::adc::Channel;
-use crate::i2c::Mode;
-use crate::i2c::Async;
-use embassy_rp::Peripherals;
 use embedded_graphics::prelude::Point;
 use heapless::String;
 use cyw43_pio::{PioSpi, DEFAULT_CLOCK_DIVIDER};
@@ -25,7 +23,7 @@ use embassy_rp::adc::{Adc, Channel as AdcChannel, Config as AdcConfig, Interrupt
 use embassy_rp::i2c::{self, Config as I2cConfig, InterruptHandler as I2cInterruptHandler};
 use embassy_rp::peripherals::{DMA_CH0, PIO0, I2C1};
 use embassy_rp::pio::{InterruptHandler as PioInterruptHandler, Pio};
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -42,19 +40,17 @@ bind_interrupts!(struct Irqs {
 });
 
 // joystick state (static) written from ADC, read and published by bluetooth stack
-static mut joystick_x: u16 = 0;
-static mut joystick_y: u16 = 0;
+static mut JOYSTICK_X: u16 = 0;
+static mut JOYSTICK_Y: u16 = 0;
 
 // Use your company ID (register for free with Bluetooth SIG)
 const COMPANY_ID: u16 = 0xBEEF;
 
-fn make_adv_payload(start: Instant, update_count: u32) -> [u8; 8] {
+fn make_adv_payload(update_count: u32) -> [u8; 8] {
     let mut data = [0u8; 8];
-    let elapsed_ms = Instant::now().duration_since(start).as_millis() as u32;
     data[0..4].copy_from_slice(&update_count.to_be_bytes());
-    // data[4..8].copy_from_slice(&elapsed_ms.to_be_bytes());
-    unsafe { data[4..6].copy_from_slice(&joystick_x.to_be_bytes()); }
-    unsafe { data[6..8].copy_from_slice(&joystick_y.to_be_bytes()); }
+    unsafe { data[4..6].copy_from_slice(&JOYSTICK_X.to_be_bytes()); }
+    unsafe { data[6..8].copy_from_slice(&JOYSTICK_Y.to_be_bytes()); }
     data
 }
 
@@ -82,14 +78,13 @@ where
 
     let mut adv_data = [0; 64];
     let mut update_count = 0u32;
-    let start = Instant::now();
     let len = AdStructure::encode_slice(
         &[
             AdStructure::CompleteLocalName(b"JoyStickBeacon"),
             AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
             AdStructure::ManufacturerSpecificData {
                 company_identifier: COMPANY_ID,
-                payload: &make_adv_payload(start, update_count),
+                payload: &make_adv_payload(update_count),
             },
         ],
         &mut adv_data[..],
@@ -121,7 +116,7 @@ where
                         AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
                         AdStructure::ManufacturerSpecificData {
                             company_identifier: COMPANY_ID,
-                            payload: &make_adv_payload(start, update_count),
+                            payload: &make_adv_payload(update_count),
                         },
                     ],
                     &mut adv_data[..],
@@ -168,8 +163,8 @@ async fn joystick_task(mut adc: Adc<'static, embassy_rp::adc::Async>, mut joysti
         }
         
         unsafe {
-            joystick_x = x;
-            joystick_y = y;
+            JOYSTICK_X = x;
+            JOYSTICK_Y = y;
         }
 
         Timer::after(Duration::from_millis(100)).await;
@@ -245,8 +240,8 @@ async fn main(spawner: Spawner) {
         Timer::after(Duration::from_secs(1)).await;
 
         // READ ADC and convert to strings for display
-        let xline = convert(unsafe { joystick_x });
-        let yline = convert(unsafe { joystick_y });
+        let xline = convert(unsafe { JOYSTICK_X });
+        let yline = convert(unsafe { JOYSTICK_Y });
 
         // print things...
         let mut line:String<5> = String::new();
