@@ -204,11 +204,12 @@ async fn main(spawner: Spawner) {
     let (_net_device, bt_device, mut control, runner) = cyw43::new_with_bluetooth(state, pwr, spi, fw, btfw).await;
     unwrap!(spawner.spawn(cyw43_task(runner)));
 
-    control.init(clm).await;
-    control.set_power_management(cyw43::PowerManagementMode::PowerSave).await;
-
     // bluetooth-LE controller
     unwrap!(spawner.spawn(beacon_task(bt_device)));
+
+
+    control.init(clm).await;
+    control.set_power_management(cyw43::PowerManagementMode::PowerSave).await;
 
     // let wifi_ssid = env!("WIFI_SSID");
     // let wifi_password = env!("WIFI_PASSWORD");
@@ -220,7 +221,6 @@ async fn main(spawner: Spawner) {
     screen.write_text("Hello Rust", Point::zero(), display::TextStyle::Positive);
     screen.flush();
 
-    
     // Configure ADC for Joystick reading
     let adc = Adc::new(p.ADC, Irqs, AdcConfig::default());
     let joystick_h = AdcChannel::new_pin(p.PIN_26, Pull::None);

@@ -1,5 +1,6 @@
 #![no_std]
 
+use defmt::{info, warn};
 use embassy_rp::i2c;
 use embassy_rp::peripherals::I2C1;
 use embedded_graphics::{
@@ -56,6 +57,7 @@ impl Display<'_> {
     }
 
     pub fn flush(&mut self) {
+        // sometimes panics here
         self.display.flush().unwrap();
     }
 
