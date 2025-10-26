@@ -6,6 +6,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 
 #[derive(Debug)]
 enum Request {
+    Unknown,
     Set(String, String),
     Get(String),
 }
@@ -24,10 +25,10 @@ async fn main() {
     println!("Listening on port 8000");
     let listener = TcpListener::bind("127.0.0.1:8000").await.unwrap();
 
-    // build a channel to a "service"
-    let (mut tx, rx) = mpsc::channel::<RequestTransport>(100);
+    // build a channel to a handler processing each request in turn in order to prevent concurrency issues
+    let (tx, rx) = mpsc::channel::<RequestTransport>(100);
     tokio::spawn(async move {
-        service(rx).await;
+        handle_single_request(rx).await;
     });
 
     loop {
@@ -36,13 +37,12 @@ async fn main() {
         // moved to the new task and processed there.
         let tx_clone = tx.clone();
         tokio::spawn(async move {
-            process(socket, &tx_clone.clone().borrow_mut()).await;
+            handle_client_connection(socket, &tx_clone.clone().borrow_mut()).await;
         });
     }
 }
 
-/// process one client
-async fn process(socket: TcpStream, tx: &Sender<RequestTransport>) {
+async fn handle_client_connection(socket: TcpStream, tx: &Sender<RequestTransport>) {
     println!("Connection from {}", socket.peer_addr().unwrap());
     let mut stream = BufStream::new(socket);
 
@@ -50,30 +50,53 @@ async fn process(socket: TcpStream, tx: &Sender<RequestTransport>) {
         let line = &mut String::new();
         let nr_bytes = stream.read_line(line).await.unwrap();
         if nr_bytes == 0 {
-            println!("0 bytes read, closing connection");
+            // println!("0 bytes read, closing connection");
             stream.write(b"bye\r\n").await.unwrap();
             stream.flush().await.unwrap();
             break;
         } else {
             stream.consume(nr_bytes);
-            println!("read {} bytes -> {}", nr_bytes, line);
+            // println!("read {} bytes -> {}", nr_bytes, line);
             stream.write(format!("consumed {} bytes\r\n", nr_bytes).as_bytes()).await.unwrap();
             stream.flush().await.unwrap();
 
-            // send a request through our channel
-            let (response_tx, response_rx) = oneshot::channel::<Response>();
-            tx.send((Request::Get(line.clone()), response_tx)).await.unwrap();
+            let parts = line.split_whitespace().collect::<Vec<&str>>();
+            // println!("parts {:?}", parts);
+            let maybe_request: Result<Request, String> = match parts[0].to_lowercase().as_str() {
+                "set" => if parts.len() >= 3 {
+                    Ok(Request::Set(parts[1].to_string(), parts[2..].join(" ").to_string()))
+                } else {
+                    Err(format!("set: expected min 3 parts but received {}", parts.len()))
+                },
+                "get" => if parts.len() == 2 {
+                    Ok(Request::Get(parts[1].to_string()))
+                } else {
+                    Err(format!("get: expected 2 parts but received {}", parts.len()))
+                }
+                _ => Err(format!("not a valid request: {}", parts[0]))
+            };
 
-            // "wait" for the response
-            let response = response_rx.await.unwrap();
-            stream.write(format!("response: {:?}\r\n", response).as_bytes()).await.unwrap();
-            stream.flush().await.unwrap();
+            match maybe_request {
+                Ok(request) => {
+                    // send a request plus back channel through our channel
+                    let (response_tx, response_rx) = oneshot::channel::<Response>();
+                    tx.send((request, response_tx)).await.unwrap();
+
+                    // "wait" for the response
+                    let response = response_rx.await.unwrap();
+                    stream.write(format!("response: {:?}\r\n", response).as_bytes()).await.unwrap();
+                    stream.flush().await.unwrap();
+                },
+                Err(message) => {
+                    stream.write(format!("bad request: {}\r\n", message).as_bytes()).await.unwrap();
+                    stream.flush().await.unwrap();
+                }
+            }
         }
     }
 }
 
-/// sequentially handle one request
-async fn service(mut rx: Receiver<RequestTransport>) {
+async fn handle_single_request(mut rx: Receiver<RequestTransport>) {
     while let Some((command, response_channel)) = rx.recv().await {
         println!("Service received: {:?}", command);
         // TODO: do calculation
