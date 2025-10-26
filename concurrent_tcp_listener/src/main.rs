@@ -1,24 +1,31 @@
-use std::borrow::BorrowMut;
+use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufStream};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{oneshot,mpsc};
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::{signal, time};
 
 #[derive(Debug)]
 enum Request {
-    Unknown,
-    Set(String, String),
-    Get(String),
+    Set(String, String),    // set key := value
+    Get(String),            // get key -> value
+
+    // management requests, used internally
+    Persist(),              // persist hashmap to disk
+    Close(),                // Close channel and terminate processing
 }
 
 #[derive(Debug)]
 enum Response {
     Ok(),
-    Result(String)
+    NotFound(String),
+    Result(String),
 }
 
 /// data transferred over the channel to our service
 type RequestTransport = (Request, oneshot::Sender<Response>);
+
+// TODO: discover signal(TERM) and force persisting of hashmap
 
 #[tokio::main]
 async fn main() {
@@ -29,15 +36,43 @@ async fn main() {
     let (tx, rx) = mpsc::channel::<RequestTransport>(100);
     tokio::spawn(async move {
         handle_single_request(rx).await;
+        println!("Handle Single Request Task isDone");
+        std::process::exit(1);
     });
 
+    // establish a Ctrl-C handler for a graceful shutdown
+    let tx_clone = tx.clone();
+    tokio::spawn(async move {
+        signal::ctrl_c().await.unwrap();
+
+        println!("CTRL-C received, Closing Service");
+
+        let (response_tx, response_rx) = oneshot::channel::<Response>();
+        tx_clone.send((Request::Close(), response_tx)).await.unwrap();
+        response_rx.await.unwrap();
+    });
+
+
+    // a timer triggering a "persist" request every 20s
+    let tx_clone = tx.clone();
+    tokio::spawn(async move {
+        loop {
+            time::sleep(time::Duration::from_secs(20)).await;
+
+            let (response_tx, response_rx) = oneshot::channel::<Response>();
+            tx_clone.send((Request::Persist(), response_tx)).await.unwrap();
+            response_rx.await.unwrap();
+        };
+    });
+
+    // accept loop
     loop {
         let (socket, _) = listener.accept().await.unwrap();
-        // A new task is spawned for each inbound socket. The socket is
-        // moved to the new task and processed there.
+        // A new task is spawned for each inbound socket.
+        // The socket is moved to the new task and processed there.
         let tx_clone = tx.clone();
         tokio::spawn(async move {
-            handle_client_connection(socket, &tx_clone.clone().borrow_mut()).await;
+            handle_client_connection(socket, &tx_clone).await;
         });
     }
 }
@@ -61,19 +96,13 @@ async fn handle_client_connection(socket: TcpStream, tx: &Sender<RequestTranspor
             stream.flush().await.unwrap();
 
             let parts = line.split_whitespace().collect::<Vec<&str>>();
-            // println!("parts {:?}", parts);
-            let maybe_request: Result<Request, String> = match parts[0].to_lowercase().as_str() {
-                "set" => if parts.len() >= 3 {
-                    Ok(Request::Set(parts[1].to_string(), parts[2..].join(" ").to_string()))
-                } else {
-                    Err(format!("set: expected min 3 parts but received {}", parts.len()))
-                },
-                "get" => if parts.len() == 2 {
-                    Ok(Request::Get(parts[1].to_string()))
-                } else {
-                    Err(format!("get: expected 2 parts but received {}", parts.len()))
-                }
-                _ => Err(format!("not a valid request: {}", parts[0]))
+
+            let maybe_request: Result<Request, String> = match parts[..] {
+                ["set", key, value] =>
+                    Ok(Request::Set(parts[1].to_string(), parts[2..].join(" ").to_string())),
+                ["get", key] =>
+                    Ok(Request::Get(parts[1].to_string())),
+                _ => Err(format!("not a valid request: {:?}", parts))
             };
 
             match maybe_request {
@@ -88,7 +117,7 @@ async fn handle_client_connection(socket: TcpStream, tx: &Sender<RequestTranspor
                     stream.flush().await.unwrap();
                 },
                 Err(message) => {
-                    stream.write(format!("bad request: {}\r\n", message).as_bytes()).await.unwrap();
+                    stream.write(format!("bad request - {}\r\n", message).as_bytes()).await.unwrap();
                     stream.flush().await.unwrap();
                 }
             }
@@ -97,9 +126,35 @@ async fn handle_client_connection(socket: TcpStream, tx: &Sender<RequestTranspor
 }
 
 async fn handle_single_request(mut rx: Receiver<RequestTransport>) {
+    let mut storage = HashMap::new();
+    // TODO: initialize or load hashmap from disk
     while let Some((command, response_channel)) = rx.recv().await {
         println!("Service received: {:?}", command);
-        // TODO: do calculation
-        response_channel.send(Response::Ok()).unwrap();
+        let response = match command {
+            Request::Set(key, value) => {
+                storage.insert(key, value);
+                Response::Ok()
+            },
+            Request::Get(key) => {
+                storage.get(&key)
+                    .map(|v| Response::Result(v.clone()))
+                    .unwrap_or(Response::NotFound(key))
+            },
+
+            // Maintenance requests
+            Request::Close() => {
+                rx.close();
+                Response::Ok()
+            },
+            Request::Persist() => {
+                // TODO: persist to disk if not changed
+                println!("Persist request");
+                Response::Ok()
+            }
+        };
+        response_channel.send(response).unwrap();
     }
+
+    println!("Service is finished. TODO: shut down");
+    // finally persist hashmap to disk
 }
