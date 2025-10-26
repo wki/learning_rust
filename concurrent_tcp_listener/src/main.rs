@@ -7,12 +7,12 @@ use tokio::{signal, time};
 
 #[derive(Debug)]
 enum Request {
-    Set(String, String),    // set key := value
+    Set(String, String),    // set key := value -> OK
     Get(String),            // get key -> value
 
     // management requests, used internally
-    Persist(),              // persist hashmap to disk
-    Close(),                // Close channel and terminate processing
+    Persist(),              // persist hashmap to disk -> OK
+    Close(),                // Close channel and terminate processing -> OK
 }
 
 #[derive(Debug)]
@@ -25,7 +25,11 @@ enum Response {
 /// data transferred over the channel to our service
 type RequestTransport = (Request, oneshot::Sender<Response>);
 
-// TODO: discover signal(TERM) and force persisting of hashmap
+async fn send_request_and_wait_for_response(r:Request, tx:&Sender<RequestTransport>) -> Response {
+    let (response_tx, response_rx) = oneshot::channel::<Response>();
+    tx.send((r, response_tx)).await.unwrap();
+    response_rx.await.unwrap()
+}
 
 #[tokio::main]
 async fn main() {
@@ -46,22 +50,16 @@ async fn main() {
         signal::ctrl_c().await.unwrap();
 
         println!("CTRL-C received, Closing Service");
-
-        let (response_tx, response_rx) = oneshot::channel::<Response>();
-        tx_clone.send((Request::Close(), response_tx)).await.unwrap();
-        response_rx.await.unwrap();
+        send_request_and_wait_for_response(Request::Close(), &tx_clone).await;
     });
 
 
-    // a timer triggering a "persist" request every 20s
+    // a timer triggering a Persist request every 20s
     let tx_clone = tx.clone();
     tokio::spawn(async move {
         loop {
             time::sleep(time::Duration::from_secs(20)).await;
-
-            let (response_tx, response_rx) = oneshot::channel::<Response>();
-            tx_clone.send((Request::Persist(), response_tx)).await.unwrap();
-            response_rx.await.unwrap();
+            send_request_and_wait_for_response(Request::Persist(), &tx_clone).await;
         };
     });
 
@@ -85,13 +83,11 @@ async fn handle_client_connection(socket: TcpStream, tx: &Sender<RequestTranspor
         let line = &mut String::new();
         let nr_bytes = stream.read_line(line).await.unwrap();
         if nr_bytes == 0 {
-            // println!("0 bytes read, closing connection");
             stream.write(b"bye\r\n").await.unwrap();
             stream.flush().await.unwrap();
             break;
         } else {
             stream.consume(nr_bytes);
-            // println!("read {} bytes -> {}", nr_bytes, line);
             stream.write(format!("consumed {} bytes\r\n", nr_bytes).as_bytes()).await.unwrap();
             stream.flush().await.unwrap();
 
@@ -107,12 +103,7 @@ async fn handle_client_connection(socket: TcpStream, tx: &Sender<RequestTranspor
 
             match maybe_request {
                 Ok(request) => {
-                    // send a request plus back channel through our channel
-                    let (response_tx, response_rx) = oneshot::channel::<Response>();
-                    tx.send((request, response_tx)).await.unwrap();
-
-                    // "wait" for the response
-                    let response = response_rx.await.unwrap();
+                    let response = send_request_and_wait_for_response(request, tx).await;
                     stream.write(format!("response: {:?}\r\n", response).as_bytes()).await.unwrap();
                     stream.flush().await.unwrap();
                 },
@@ -156,5 +147,5 @@ async fn handle_single_request(mut rx: Receiver<RequestTransport>) {
     }
 
     println!("Service is finished. TODO: shut down");
-    // finally persist hashmap to disk
+    // TODO: finally persist hashmap to disk
 }
