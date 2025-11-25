@@ -1,0 +1,9 @@
+# Test Web API
+@main_url = http://localhost:8000
+
+### main URL "hello world"
+GET {{main_url}}/
+
+### greet a named person
+
+GET {{main_url}}/wolfgang
